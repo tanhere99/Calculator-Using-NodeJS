@@ -1,0 +1,28 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Deploy to server
+        uses: appleboy/ssh-action@master
+        with:
+          host: 185.211.4.48
+          username: hardik
+          key: ${{ secrets.SSH_KEY }}
+          port: 22
+          script: |
+            cd /server/ai3/node/
+            git pull origin main
+            npm install
+            pm2 restart ai3-calculator-app
+            pm2 save
