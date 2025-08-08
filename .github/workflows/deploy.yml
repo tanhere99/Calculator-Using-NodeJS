@@ -3,26 +3,54 @@ name: Deploy to Production
 on:
   push:
     branches:
-      - master
+      - main         # <- set to your real default branch
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: true
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v2
+      - name: Checkout (for metadata only)
+        uses: actions/checkout@v4
 
-      - name: Deploy to server
-        uses: appleboy/ssh-action@master
+      - name: Deploy over SSH (git pull + npm ci + pm2 restart)
+        uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USERNAME }}
           key: ${{ secrets.SSH_KEY }}
           port: 22
           script: |
+            set -e
+
+            # Move to app directory on server
             cd /server/ai3/node/
-            git pull origin main
-            npm install
-            pm2 restart ai3-calculator-app
+
+            # Ensure correct branch & latest code
+            git fetch origin main
+            git checkout main
+            git pull --ff-only origin main
+
+            # Use Node version manager if you have it, otherwise skip.
+            # Example (optional):
+            # export NVM_DIR="$HOME/.nvm"
+            # [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+            # nvm install 20
+            # nvm use 20
+
+            # Install deps cleanly
+            npm ci --omit=dev || npm install --production
+
+            # First run protection (start if not running, else restart)
+            if pm2 describe ai3-calculator-app > /dev/null; then
+              pm2 restart ai3-calculator-app
+            else
+              # Replace 'src/index.js' with your real entry point if needed
+              pm2 start src/index.js --name ai3-calculator-app
+            fi
+
             pm2 save
