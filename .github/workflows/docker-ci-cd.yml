@@ -2,13 +2,12 @@ name: CI/CD
 
 on:
   push:
-    branches: [ "main" ]     # <- use your real default branch
+    branches: [ "main" ]     # change if your default branch is different
   workflow_dispatch: {}
 
-env:
-  env:
-  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/calculator-using-nodejs
-
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: true
 
 jobs:
   build-and-push:
@@ -16,27 +15,37 @@ jobs:
     permissions:
       contents: read
       packages: write
+
     steps:
       - uses: actions/checkout@v4
+
+      # Create lowercase image name and short SHA for tags
+      - name: Normalize image name (lowercase) + short SHA
+        run: |
+          echo "IMAGE_NAME=ghcr.io/${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
+          echo "SHORT_SHA=${GITHUB_SHA::7}" >> $GITHUB_ENV
+          echo "Using image: $IMAGE_NAME"
+          echo "Short SHA: $SHORT_SHA"
 
       - name: Log in to GHCR
         run: echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login ghcr.io -u ${{ secrets.REGISTRY_USER }} --password-stdin
 
       - name: Build image
-        run: docker build -t $IMAGE_NAME:latest .
+        run: docker build -t "$IMAGE_NAME:latest" .
 
-      - name: Push image
-        run: docker push $IMAGE_NAME:latest
+      - name: Push :latest
+        run: docker push "$IMAGE_NAME:latest"
 
-      - name: Tag by commit (optional rollback tag)
+      # Optional rollback tag by commit
+      - name: Tag & push by commit
         run: |
-          SHORT_SHA=${GITHUB_SHA::7}
-          docker tag $IMAGE_NAME:latest $IMAGE_NAME:sha-$SHORT_SHA
-          docker push $IMAGE_NAME:sha-$SHORT_SHA
+          docker tag "$IMAGE_NAME:latest" "$IMAGE_NAME:sha-$SHORT_SHA"
+          docker push "$IMAGE_NAME:sha-$SHORT_SHA"
 
   deploy:
     needs: build-and-push
     runs-on: ubuntu-latest
+
     steps:
       - name: SSH pull & restart
         uses: appleboy/ssh-action@v1.0.3
@@ -47,8 +56,10 @@ jobs:
           port: 22
           script: |
             set -e
+            # If your GHCR package is private, keep this login; if public, you can remove it.
             echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login ghcr.io -u ${{ secrets.REGISTRY_USER }} --password-stdin || true
-            cd /server/ai2/html/calculator-node
+
+            cd /server/ai2/html/calculator-node   # <-- make sure this matches your server path
             docker compose pull
             docker compose up -d
             docker image prune -f
