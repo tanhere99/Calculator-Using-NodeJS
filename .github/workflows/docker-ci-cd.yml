@@ -1,0 +1,52 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [ "main" ]     # <- use your real default branch
+  workflow_dispatch: {}
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login ghcr.io -u ${{ secrets.REGISTRY_USER }} --password-stdin
+
+      - name: Build image
+        run: docker build -t $IMAGE_NAME:latest .
+
+      - name: Push image
+        run: docker push $IMAGE_NAME:latest
+
+      - name: Tag by commit (optional rollback tag)
+        run: |
+          SHORT_SHA=${GITHUB_SHA::7}
+          docker tag $IMAGE_NAME:latest $IMAGE_NAME:sha-$SHORT_SHA
+          docker push $IMAGE_NAME:sha-$SHORT_SHA
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH pull & restart
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_KEY }}
+          port: 22
+          script: |
+            set -e
+            echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login ghcr.io -u ${{ secrets.REGISTRY_USER }} --password-stdin || true
+            cd /server/ai2/html/calculator-node
+            docker compose pull
+            docker compose up -d
+            docker image prune -f
