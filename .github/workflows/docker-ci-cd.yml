@@ -2,7 +2,7 @@ name: CI/CD
 
 on:
   push:
-    branches: [ "main" ]     # change if your default branch is different
+    branches: [ "main" ]
   workflow_dispatch: {}
 
 concurrency:
@@ -19,33 +19,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Create lowercase image name and short SHA for tags
-      - name: Normalize image name (lowercase) + short SHA
+      # Compute normalized (lowercase) image name and short SHA as step outputs
+      - name: Compute image meta
+        id: meta
+        shell: bash
         run: |
-          echo "IMAGE_NAME=ghcr.io/${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
-          echo "SHORT_SHA=${GITHUB_SHA::7}" >> $GITHUB_ENV
-          echo "Using image: $IMAGE_NAME"
-          echo "Short SHA: $SHORT_SHA"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Show image tag
+        run: echo "Will build and push -> ${{ steps.meta.outputs.image }}:latest (${{ steps.meta.outputs.short_sha }})"
 
       - name: Log in to GHCR
-        run: echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login ghcr.io -u ${{ secrets.REGISTRY_USER }} --password-stdin
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build image
-        run: docker build -t "$IMAGE_NAME:latest" .
-
-      - name: Push :latest
-        run: docker push "$IMAGE_NAME:latest"
-
-      # Optional rollback tag by commit
-      - name: Tag & push by commit
         run: |
-          docker tag "$IMAGE_NAME:latest" "$IMAGE_NAME:sha-$SHORT_SHA"
-          docker push "$IMAGE_NAME:sha-$SHORT_SHA"
+          docker build \
+            -t "${{ steps.meta.outputs.image }}:latest" \
+            -t "${{ steps.meta.outputs.image }}:sha-${{ steps.meta.outputs.short_sha }}" \
+            .
+
+      - name: Push images
+        run: |
+          docker push "${{ steps.meta.outputs.image }}:latest"
+          docker push "${{ steps.meta.outputs.image }}:sha-${{ steps.meta.outputs.short_sha }}"
 
   deploy:
     needs: build-and-push
     runs-on: ubuntu-latest
-
     steps:
       - name: SSH pull & restart
         uses: appleboy/ssh-action@v1.0.3
@@ -56,10 +62,9 @@ jobs:
           port: 22
           script: |
             set -e
-            # If your GHCR package is private, keep this login; if public, you can remove it.
-            echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login ghcr.io -u ${{ secrets.REGISTRY_USER }} --password-stdin || true
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin || true
 
-            cd /server/ai2/html/calculator-node   # <-- make sure this matches your server path
+            cd /server/ai2/html/calculator-node
             docker compose pull
             docker compose up -d
             docker image prune -f
